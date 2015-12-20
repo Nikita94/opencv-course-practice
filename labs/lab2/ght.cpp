@@ -1,12 +1,14 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/features2d/features2d.hpp>
+
 using namespace cv;
 using namespace std;
 
 const int splitSet = 10;
+const double ransacThresh = 3.0;
 
 void ratioTestMatching(DescriptorMatcher& descriptorMatcher, const Mat& descriptors1, const Mat& descriptors2,
-                       vector<DMatch>& filteredMatches12, float ratio = 0.6f)
+  vector<DMatch>& filteredMatches12, float ratio = 0.6f)
 {
   const int knn = 2;
   filteredMatches12.clear();
@@ -20,7 +22,7 @@ void ratioTestMatching(DescriptorMatcher& descriptorMatcher, const Mat& descript
 }
 
 void crossCheckMatching(Ptr<DescriptorMatcher>& descriptorMatcher, const Mat& descriptors1, const Mat& descriptors2,
-                        vector<DMatch>& filteredMatches12, int knn = 1)
+  vector<DMatch>& filteredMatches12, int knn = 1)
 {
   filteredMatches12.clear();
   vector<vector<DMatch> > matches12, matches21;
@@ -63,7 +65,7 @@ void drawX(Point& p, Mat& unionImage)
 
 void drawKpt(Mat& img, const KeyPoint& p, const Scalar& color, int flags, Point offset = Point(0, 0))
 {
-  Point center(cvRound(p.pt.x)+offset.x, cvRound(p.pt.y)+offset.y);
+  Point center(cvRound(p.pt.x) + offset.x, cvRound(p.pt.y) + offset.y);
 
   if (flags & DrawMatchesFlags::DRAW_RICH_KEYPOINTS)
   {
@@ -99,7 +101,7 @@ int main(int argc, char* argv[])
   cout << "< Creating detector, descriptor extractor and descriptor matcher ..." << endl;
   Ptr<FeatureDetector> detector = FeatureDetector::create("ORB");
   Ptr<DescriptorExtractor> descriptorExtractor = DescriptorExtractor::create("ORB");
-  // Ptr<DescriptorMatcher> descriptorMatcher = new BruteForceMatcher<L1<float> > ();
+
   BFMatcher descriptorMatcher(NORM_HAMMING);
 
   cout << "< Reading the images..." << endl;
@@ -142,20 +144,36 @@ int main(int argc, char* argv[])
   waitKey(0);
 
   vector<DMatch> matches;
-  //crossCheckMatching(descriptorMatcher, descriptors1, descriptors2, matches, 1);
-  ratioTestMatching(descriptorMatcher, descriptors1, descriptors2, matches, 0.8);
+
+  ratioTestMatching(descriptorMatcher, descriptors1, descriptors2, matches, 0.8f);
   namedWindow("matches", 0);
   drawMatches(image, keypoints1, scene, keypoints2, matches, drawImg, Scalar(0, 255, 0), Scalar(0, 0, 255), Mat(),
-              DrawMatchesFlags::DEFAULT);
+    DrawMatchesFlags::DEFAULT);
   imshow("matches", drawImg);
   waitKey(0);
 
   Point center(image.cols / 2, image.rows / 2);
-  Mat hgt(scene.rows/splitSet, scene.cols/splitSet, CV_32S, Scalar::all(0));
+  Mat hgt(scene.rows / splitSet, scene.cols / splitSet, CV_32S, Scalar::all(0));
+  float normDist = 0.0;
+  float angle = 0.0;
+  KeyPoint pointOnObject;
+  KeyPoint pointOnScene;
+  float dAngle = 0.0;
+  float dScale = 0.0;
 
-  for (int matchInd = 0; matchInd < matches.size(); matchInd++)
-  {
+  for (int matchInd = 0; matchInd < matches.size(); matchInd++) {
+    pointOnObject = keypoints1[matches[matchInd].queryIdx];
+    pointOnScene  = keypoints2[matches[matchInd].trainIdx];
 
+    Point2f difference = (Point2f)center - pointOnObject.pt;
+    normDist = (float)norm(difference);
+    angle = atan(difference.y / difference.x);
+    dAngle = (pointOnScene.angle - pointOnObject.angle) * (float)CV_PI / 180.0f;
+    dScale = pointOnScene.size / pointOnObject.size;
+    Point center = Point(cvRound(pointOnScene.pt.x + cos(angle + dAngle) * (normDist * dScale)), 
+               cvRound(pointOnScene.pt.y + sin(angle + dAngle) * (normDist * dScale)));
+
+    hgt.at<int>(center.y / splitSet, center.x / splitSet)++;
   }
   Point maxP;
   minMaxLoc(hgt, 0, 0, 0, &maxP, Mat());
@@ -164,5 +182,19 @@ int main(int argc, char* argv[])
   drawX(resultCenter, scene);
   imshow("result", scene);
   waitKey(0);
+
+  //finding homography
+  vector<Point> gmgSrc(matches.size());
+  vector<Point> hmgDst(matches.size());
+  for (size_t matchInd = 0; matchInd < matches.size(); matchInd++)
+  {
+    gmgSrc[matchInd] = keypoints1[matches[matchInd].queryIdx].pt;
+    hmgDst[matchInd] = keypoints2[matches[matchInd].trainIdx].pt;
+  }
+  Mat homography = findHomography(gmgSrc, hmgDst, CV_RANSAC, ransacThresh);
+  warpPerspective(image, homography, homography, scene.size());
+  imshow("homography", homography);
+  waitKey(0);
+
   return 0;
 }
